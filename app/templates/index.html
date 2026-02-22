@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kerberos Keytab Generator</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="header">
+                <h1>Kerberos Keytab Generator</h1>
+                <p class="subtitle">Generate a keytab file from SPN and password</p>
+            </div>
+
+            <form id="keytabForm" class="form">
+                <div class="form-group">
+                    <label for="domain">Kerberos Domain (Realm) *</label>
+                    <input 
+                        type="text" 
+                        id="domain" 
+                        name="domain" 
+                        placeholder="e.g., EXAMPLE.COM" 
+                        required
+                        autocomplete="off"
+                    >
+                    <small>The Kerberos realm, typically your domain in uppercase</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="spn">Service Principal Name (SPN) *</label>
+                    <input 
+                        type="text" 
+                        id="spn" 
+                        name="spn" 
+                        placeholder="e.g., HTTP/server.example.com" 
+                        required
+                        autocomplete="off"
+                    >
+                    <small>Format: SERVICE/hostname or SERVICE/hostname@REALM</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password *</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        placeholder="Enter the service account password" 
+                        required
+                        autocomplete="off"
+                    >
+                    <small>This is only used to generate the keytab locally</small>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="submitBtn">
+                    <span class="btn-text">Generate Keytab</span>
+                    <span class="spinner" style="display: none;"></span>
+                </button>
+            </form>
+
+            <div id="message" class="message" style="display: none;"></div>
+
+            <div class="info-box">
+                <h3>ℹ️ About Keytab Files</h3>
+                <ul>
+                    <li>Keytab files contain cryptographic keys derived from passwords</li>
+                    <li>Keep keytab files secure - treat them like passwords</li>
+                    <li>Multiple encryption algorithms are included (RC4-HMAC, AES256, AES128)</li>
+                    <li>Keytab files are binary files used for Kerberos authentication</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

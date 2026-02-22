@@ -11,6 +11,9 @@ A standalone Python tool for generating and inspecting Kerberos keytab files wit
 - ✓ Cross-platform support (Linux, macOS, Windows)
 - ✓ AES256-CTS-HMAC-SHA1-96 encryption (modern standard)
 - ✓ Secure password input (hidden from screen)
+- ✓ **Harness Integration**: Retrieve AD credentials from HashiCorp Vault
+- ✓ **AppRole Authentication**: Secure authentication to Vault via AppRole
+- ✓ **Temporary File Management**: Auto-generated filenames with secure cleanup
 
 ## Installation
 
@@ -28,6 +31,152 @@ A standalone Python tool for generating and inspecting Kerberos keytab files wit
    ```
 
 ## Usage
+
+### Harness Integration Guide
+
+For CI/CD automation with Harness pipelines, use the dedicated Harness CLI tool that retrieves credentials from HashiCorp Vault.
+
+#### Prerequisites
+- HashiCorp Vault instance configured with AppRole auth method
+- AD service account credentials stored in Vault KV v2 engine
+- AppRole credentials (Role ID and Secret ID)
+
+#### Step 1: Generate Keytab from Vault
+
+Use the `harness_keytab.py` script in your Harness pipeline:
+
+```bash
+python3 app/harness_keytab.py \
+  --vault-addr https://vault.example.com:8200 \
+  --role-id <ROLE_ID> \
+  --secret-id <SECRET_ID> \
+  --secret-path ad-accounts/service1 \
+  --domain EXAMPLE.COM \
+  --spn HTTP/server.example.com \
+  --output /tmp/http.keytab
+```
+
+**Arguments:**
+- `--vault-addr` - Vault server address
+- `--role-id` - AppRole Role ID
+- `--secret-id` - AppRole Secret ID
+- `--secret-path` - Path to secret in KV v2 (e.g., `ad-accounts/service1`)
+- `--domain` - Kerberos realm (e.g., `EXAMPLE.COM`)
+- `--spn` - Service Principal Name (e.g., `HTTP/server.example.com`)
+- `--output` - Output file path (optional, auto-generated if omitted)
+- `--username-field` - Field name for username in secret (default: `username`)
+- `--password-field` - Field name for password in secret (default: `password`)
+- `--no-verify-ssl` - Disable SSL verification (not recommended)
+- `--json` - Output result as JSON
+
+**Returns:**
+```
+[SUCCESS] Keytab file generated: /tmp/http.keytab
+[INFO] File size: 94 bytes
+[INFO] Permissions: 600 (owner read/write only)
+
+Keytab file ready for rsync: /tmp/http.keytab
+```
+
+#### Step 2: Copy Keytab via rsync
+
+Copy the generated keytab from Kubernetes node to target Linux VM:
+
+```bash
+KEYTAB_PATH=$(python3 app/harness_keytab.py \
+  --vault-addr https://vault.example.com:8200 \
+  --role-id $VAULT_ROLE_ID \
+  --secret-id $VAULT_SECRET_ID \
+  --secret-path ad-accounts/service1 \
+  --domain EXAMPLE.COM \
+  --spn HTTP/server.example.com | grep "Keytab file ready" | awk '{print $NF}')
+
+rsync -avz "$KEYTAB_PATH" target-vm:/etc/krb5.keytab
+```
+
+Or with explicit output path:
+
+```bash
+KEYTAB_PATH="/tmp/http_$(date +%s).keytab"
+
+python3 app/harness_keytab.py \
+  --vault-addr https://vault.example.com:8200 \
+  --role-id $VAULT_ROLE_ID \
+  --secret-id $VAULT_SECRET_ID \
+  --secret-path ad-accounts/service1 \
+  --domain EXAMPLE.COM \
+  --spn HTTP/server.example.com \
+  --output "$KEYTAB_PATH"
+
+rsync -avz "$KEYTAB_PATH" target-vm:/etc/krb5.keytab
+```
+
+#### Step 3: Clean Up Temporary File
+
+After rsync completes, securely delete the temporary keytab:
+
+```bash
+python3 app/cleanup_keytab.py --file "$KEYTAB_PATH" --secure --verbose
+```
+
+**Arguments for cleanup:**
+- `--file` - Path to keytab file to delete
+- `--secure` - Use secure deletion with random overwrite (default: simple deletion)
+- `--passes` - Number of overwrite passes (default: 3)
+- `--verbose` - Print verbose output
+- `--json` - Output result as JSON
+
+#### Complete Harness Stage Example
+
+```yaml
+stage:
+  name: Deploy with Keytab
+  spec:
+    steps:
+      - step:
+          type: ShellScript
+          name: Generate and Deploy Keytab
+          spec:
+            shell: Bash
+            command: |
+              set -e
+              
+              # Generate keytab from Vault
+              KEYTAB_PATH=$(mktemp --suffix=.keytab)
+              
+              python3 app/harness_keytab.py \
+                --vault-addr ${VAULT_ADDR} \
+                --role-id ${VAULT_ROLE_ID} \
+                --secret-id ${VAULT_SECRET_ID} \
+                --secret-path ${VAULT_SECRET_PATH} \
+                --domain ${AD_DOMAIN} \
+                --spn ${AD_SPN} \
+                --output "$KEYTAB_PATH" \
+                --json > /tmp/keytab_result.json
+              
+              # Extract path from JSON output (optional)
+              KEYTAB_PATH=$(cat /tmp/keytab_result.json | grep -o '"keytab_path":"[^"]*' | cut -d'"' -f4)
+              
+              # Copy to target VM
+              rsync -avz -e "ssh -i ${K8S_NODE_SSH_KEY}" \
+                "$KEYTAB_PATH" \
+                ${DEPLOY_USER}@${TARGET_VM}:/etc/krb5.keytab
+              
+              # Clean up local file
+              python3 app/cleanup_keytab.py --file "$KEYTAB_PATH" --secure --verbose
+              
+              echo "Keytab deployed successfully"
+            envVariables:
+              VAULT_ADDR: <+secrets.getValue("vault_addr")>
+              VAULT_ROLE_ID: <+secrets.getValue("vault_role_id")>
+              VAULT_SECRET_ID: <+secrets.getValue("vault_secret_id")>
+              VAULT_SECRET_PATH: <+secrets.getValue("ad_credential_path")>
+              AD_DOMAIN: <+secrets.getValue("ad_domain")>
+              AD_SPN: <+secrets.getValue("ad_spn")>
+              TARGET_VM: <+secrets.getValue("target_vm_ip")>
+              DEPLOY_USER: <+secrets.getValue("deploy_user")>
+              K8S_NODE_SSH_KEY: /etc/secrets/k8s_node_ssh_key
+```
 
 ### Generate a Keytab File
 
@@ -136,6 +285,19 @@ No KDC, network access, or Kerberos infrastructure needed for keytab generation 
 - **Keytab Files**: Generated keytab files contain sensitive cryptographic material. Protect them as you would passwords.
 - **Permissions**: On Unix-like systems, restrict file permissions: `chmod 600 keytab.keytab`
 - **Storage**: Keep keytab files in secure locations with restricted access.
+- **Vault Integration**: 
+  - AppRole credentials (Role ID and Secret ID) are used to authenticate to Vault
+  - Always store Vault credentials in Harness secrets management
+  - Never commit AppRole credentials to version control
+  - Use short-lived Secret IDs when possible
+- **Temporary Files**: 
+  - Generated keytab files should be treated as temporary and destroyed after use
+  - Use `cleanup_keytab.py` with `--secure` flag for sensitive environments
+  - Configure Harness cleanup steps to ensure files are deleted even if deployment fails
+- **SSL/TLS**: 
+  - By default, SSL certificate verification is enabled for Vault connections
+  - Only disable with `--no-verify-ssl` in trusted development environments
+  - In production, always verify certificates
 
 ## Technical Details
 
@@ -169,6 +331,75 @@ Use Python 3.6 or newer and ensure cryptography is properly installed for your P
 ## License
 
 MIT
+
+## Vault AppRole Setup Guide
+
+To use the Harness integration, you'll need to configure AppRole authentication in HashiCorp Vault.
+
+### 1. Enable AppRole Auth Method
+
+```bash
+vault auth enable approle
+```
+
+### 2. Create AppRole for Harness
+
+```bash
+vault write auth/approle/role/harness-keytab \
+  token_ttl=1h \
+  token_max_ttl=4h \
+  secret_id_ttl=1h \
+  bind_secret_id=true
+```
+
+### 3. Create Policy
+
+```bash
+vault policy write harness-keytab -<<EOF
+path "secret/data/ad-accounts/*" {
+  capabilities = ["read", "list"]
+}
+EOF
+```
+
+### 4. Attach Policy to AppRole
+
+```bash
+vault write auth/approle/role/harness-keytab \
+  token_policies="harness-keytab"
+```
+
+### 5. Get Role ID
+
+```bash
+vault read auth/approle/role/harness-keytab/role-id
+```
+
+### 6. Generate Secret ID
+
+```bash
+vault write -f auth/approle/role/harness-keytab/secret-id
+```
+
+### 7. Store AD Credentials in Vault
+
+```bash
+vault kv put secret/ad-accounts/service1 \
+  username="svc_account@EXAMPLE.COM" \
+  password="ServiceAccountPassword123!"
+```
+
+### 8. Test the Integration
+
+```bash
+python3 app/harness_keytab.py \
+  --vault-addr https://vault.example.com:8200 \
+  --role-id <ROLE_ID> \
+  --secret-id <SECRET_ID> \
+  --secret-path ad-accounts/service1 \
+  --domain EXAMPLE.COM \
+  --spn HTTP/test.example.com
+```
 
 ## Notes
 
